@@ -1,6 +1,12 @@
 # herdsman
 
-This folder holds my Herdr desktop layout, **herdsman**, and the steps to put it on another machine.
+**herdsman** is a layout for the [Herdr](https://herdr.dev) desktop app. It shows all your coding agents on one board, so you can see which ones need you.
+
+```sh
+git clone https://github.com/Menno09/Herdsman.git && cd Herdsman && ./install.sh
+```
+
+That one line covers macOS and Linux. Read [Install](#install) first. The script also replaces your Herdr keybindings and settings with mine, and your old files are kept as backups. To install only the layout, see [Only the layout](#only-the-layout).
 
 The window has three parts:
 
@@ -30,24 +36,41 @@ Tested with Herdr app 0.1.16 and herdr CLI 0.9.5.
 
 JetBrains Mono, Geist and Geist Mono come with Herdr. The Running panel and sidebar use `lsof`, `curl`, `ps` and `git`. Memory stats and opening ports in the browser use the macOS commands `sysctl hw.memsize` and `open`, so on Linux those two parts may stay empty or do nothing.
 
-## Install on macOS or Linux (quick)
+## Install
 
-Copy this folder to the new machine with git, AirDrop, a USB stick or `scp -r`. Then:
+### macOS or Linux, with the script
 
 1. **Install the Herdr app and open it once.** Finish the welcome screen, then quit. The script can install the app for you, but it stops until the app has run once, because Herdr writes its built-in mods on first start.
    ```sh
    curl -fsSL https://releases.herdr.dev/app/install.sh | sh
    ```
    You can also download the Mac DMG from https://releases.herdr.dev/app/Herdr.dmg. It is for Apple silicon. On Linux you need x86_64 or arm64.
-2. **Run the installer:**
+2. **Download this repo and run the installer:**
    ```sh
-   cd herdr-pro
+   git clone https://github.com/Menno09/Herdsman.git
+   cd Herdsman
    ./install.sh
    ```
+   No git? Download the ZIP from the green **Code** button on GitHub, unzip it, and run `./install.sh` inside the folder.
    It installs the `herdr` CLI if it's missing (through Homebrew if you have it, otherwise the official script). It copies the files, sets up agent integrations for Claude Code, OpenCode and Cursor if they're installed, and registers the plan hook in `~/.claude/settings.json`. Last, it checks the mod and switches to the layout. Before replacing any file, it keeps the old one as `*.bak-<time>`.
 3. **Restart any running Claude Code sessions.** Claude Code only loads hooks when a session starts.
 
-## Install by hand (or on Windows)
+To update later, run `git pull && ./install.sh` inside the folder.
+
+### Only the layout
+
+To keep your own keybindings and settings, copy just the layout and its two mods. Do this after you've installed Herdr and opened it once:
+
+```sh
+git clone https://github.com/Menno09/Herdsman.git && cd Herdsman
+cp herdr-app/layouts/herdsman.json ~/.config/herdr-app/layouts/
+cp -R herdr-app/mods/herdr-board herdr-app/mods/spaces-tree ~/.config/herdr-app/mods/
+herdr-app do layout.switch --name herdsman
+```
+
+The board works without anything else. Without the Claude Code hook, cards don't get the **Plan** button. To add it, follow step 6 below.
+
+### By hand (or on Windows)
 
 1. Install the app:
    - **Mac:** `curl -fsSL https://releases.herdr.dev/app/install.sh | sh`, or the DMG above
@@ -100,5 +123,5 @@ Copy this folder to the new machine with git, AirDrop, a USB stick or `scp -r`. 
 ## Undo
 
 - Press Cmd+Shift+L to go back to the `main` layout.
-- Delete `~/.config/herdr-app/layouts/herdsman.json` and `~/.config/herdr-app/mods/herdr-board/` to remove the layout.
+- Delete `~/.config/herdr-app/layouts/herdsman.json`, `~/.config/herdr-app/mods/herdr-board/` and `~/.config/herdr-app/mods/spaces-tree/` to remove the layout.
 - Restore any `*.bak-<time>` file the installer left to get your old settings back.
