@@ -1,6 +1,6 @@
-# herdr++
+# herdsman
 
-This folder holds my Herdr desktop layout, **herdr++** (file name `herdr-plus-plus`, because Herdr names allow only letters, digits, - and _), and the steps to put it on another machine.
+This folder holds my Herdr desktop layout, **herdsman**, and the steps to put it on another machine.
 
 The window has three parts:
 
@@ -19,7 +19,7 @@ Tested with Herdr app 0.1.16 and herdr CLI 0.9.5.
 
 | File | Goes to | What it is |
 |---|---|---|
-| `herdr-app/layouts/herdr-plus-plus.json` | `~/.config/herdr-app/layouts/` | The layout: blocks, sizes, colors (graphite, purple accent), fonts (JetBrains Mono and Geist) |
+| `herdr-app/layouts/herdsman.json` | `~/.config/herdr-app/layouts/` | The layout: blocks, sizes, colors (graphite, purple accent), fonts (JetBrains Mono and Geist) |
 | `herdr-app/mods/herdr-board/` | `~/.config/herdr-app/mods/` | The mod that draws the top bar, the board, the Running panel and the status bar |
 | `herdr-app/mods/spaces-tree/` | `~/.config/herdr-app/mods/` | The spaces sidebar: a copy of Herdr's `spaces` mod where each space folds open |
 | `herdr-app/keys.json` | `~/.config/herdr-app/` | My keybindings (see below) |
@@ -70,7 +70,7 @@ Copy this folder to the new machine with git, AirDrop, a USB stick or `scp -r`. 
    ```sh
    herdr-app check ~/.config/herdr-app/mods/herdr-board
    herdr-app check ~/.config/herdr-app/mods/spaces-tree
-   herdr-app do layout.switch --name herdr-plus-plus
+   herdr-app do layout.switch --name herdsman
    ```
    You can also press Cmd+Shift+L (Ctrl+Shift+L on Linux and Windows) to cycle through layouts.
 
@@ -100,5 +100,5 @@ Copy this folder to the new machine with git, AirDrop, a USB stick or `scp -r`. 
 ## Undo
 
 - Press Cmd+Shift+L to go back to the `main` layout.
-- Delete `~/.config/herdr-app/layouts/herdr-plus-plus.json` and `~/.config/herdr-app/mods/herdr-board/` to remove the layout.
+- Delete `~/.config/herdr-app/layouts/herdsman.json` and `~/.config/herdr-app/mods/herdr-board/` to remove the layout.
 - Restore any `*.bak-<time>` file the installer left to get your old settings back.

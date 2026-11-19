@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs Herdr and this "herdr++" layout on macOS or Linux. Safe to re-run:
+# Installs Herdr and this "herdsman" layout on macOS or Linux. Safe to re-run:
 # every file it replaces is kept beside the original as <name>.bak-<time>.
 set -euo pipefail
 
@@ -32,7 +32,7 @@ put() { # put <source> <destination>: copy, keeping whatever was there as a back
 }
 
 echo "==> Copying the layout, mod, keys and settings"
-put "$HERE/herdr-app/layouts/herdr-plus-plus.json" "$APP_HOME/layouts/herdr-plus-plus.json"
+put "$HERE/herdr-app/layouts/herdsman.json" "$APP_HOME/layouts/herdsman.json"
 put "$HERE/herdr-app/mods/herdr-board"         "$APP_HOME/mods/herdr-board"
 put "$HERE/herdr-app/mods/spaces-tree"         "$APP_HOME/mods/spaces-tree"
 put "$HERE/herdr-app/keys.json"                "$APP_HOME/keys.json"
@@ -69,6 +69,6 @@ PY
 echo "==> Checking the mods"
 herdr-app check "$APP_HOME/mods/herdr-board"
 herdr-app check "$APP_HOME/mods/spaces-tree"
-herdr-app do layout.switch --name herdr-plus-plus 2>/dev/null \
-  || echo "Open Herdr and press Ctrl+Shift+L (or Cmd+Shift+L) until 'herdr-plus-plus' shows."
+herdr-app do layout.switch --name herdsman 2>/dev/null \
+  || echo "Open Herdr and press Ctrl+Shift+L (or Cmd+Shift+L) until 'herdsman' shows."
 echo "Done. Restart running Claude Code sessions so they load the new hook."

@@ -1,7 +1,7 @@
 {
   "id": "root",
   "cloned_from": {
-    "name": "herdr-board",
+    "name": "herdr-plus-plus",
     "version": "0.1.16"
   },
   "type": "column",
