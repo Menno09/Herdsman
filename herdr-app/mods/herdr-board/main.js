@@ -7,9 +7,9 @@
 // `xo log --json` (what landed when) and `xo act` (Merge, Ship, Archive). local.json beside this file may say
 // {"xo": "/path/to/xo", "home": "/an/xo/home"}. Focus (F) fades everything but NEEDS YOU and shows the picked task's
 // live terminal in the layout's hidden "focus-term" block, so the question can be answered in place.
-import { View, div, image, svg } from "gpui-kit";
+import { View, div, image, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, agents, terminals, run, props, exec, readTextFile, appHome, home, watchFolder, shared, setShared, window, knownAgents, nextCommand, layout, openOverlay, closeOverlay } from "herdr";
+import { spaces, agents, panes, terminals, run, props, exec, readTextFile, appHome, home, watchFolder, shared, setShared, window, knownAgents, nextCommand, layout, openOverlay, closeOverlay } from "herdr";
 
 const findNode = (node, id) => node?.id === id ? node : (node?.children ?? []).reduce((f, c) => f ?? findNode(c, id), null);
 
@@ -103,14 +103,19 @@ const agentSig = () => agents().map((a) => `${a.address}:${a.status}:${a.title}:
 const clean = (x) => (x ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 const KIND = { blocked: "needs_you", working: "in_flight", done: "ready", idle: "done" };
 
-// What ~/.claude/hooks/herdr-board-plan.py recorded for an agent: its plan file and todos, or null.
+// What the agent hooks recorded for an agent (model, plan file, todos), or null.
 const stateDir = () => `${home()}/.local/state/herdr-board`;
 async function planState(address) {
   if (address.includes("/")) return null; // shortcut: another machine's hook writes there; read only local agents
   try {
-    const st = JSON.parse(await readTextFile(`${stateDir()}/${address}.json`));
-    return st.plan_file || st.todos?.length ? st : null;
+    return JSON.parse(await readTextFile(`${stateDir()}/${address}.json`));
   } catch { return null; }
+}
+const hasPlan = (st) => Boolean(st?.plan_file || st?.todos?.length);
+// claude-opus-5-5 -> Opus 5.5; other models (gpt-6.1, composer-2) as they are
+function modelName(m) {
+  const x = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(m ?? "");
+  return x ? `${x[1][0].toUpperCase()}${x[1].slice(1)} ${x[2]}.${x[3]}` : m ?? "";
 }
 const openPlan = (address) => openOverlay({ mod: MOD, kind: "dialog", width: 860, height: 680, props: { part: "plan", address } });
 // progress items: the agent's todo list, else the plan's own checkboxes
@@ -120,8 +125,115 @@ function progress(todos, lines) {
     .map((l) => ({ text: l.replace(/^\s*[-*] \[[ xX]\]\s*/, ""), state: /\[[xX]\]/.test(l) ? "completed" : "pending" }));
 }
 
+// Claude sessions here run without a saved transcript, so their hook can't always tell the model. Fallback: the
+// agent's own screen history, its startup banner ("Opus 5.5 with high effort") or a later /model "Set model to".
+const SCAN_MS = 120000;
+const BANNER = /\b((?:Opus|Sonnet|Haiku|Fable) \d+(?:\.\d+)?) with \w+ effort/g;
+const SWITCH = /Set model to[^\n]*?\b((?:Opus|Sonnet|Haiku|Fable) \d+(?:\.\d+)?)/g;
+function lastModel(text) {
+  const all = [...text.matchAll(BANNER), ...text.matchAll(SWITCH)].sort((x, y) => x.index - y.index);
+  return all.length ? all[all.length - 1][1] : null;
+}
+
+// A plan written as a chat reply: the agent's last reply, read off its screen, when a short heading-like line names a
+// plan ("Plan to take this live"). Claude Code marks a reply with ⏺/●/•, a prompt with ❯ and a finished turn with
+// "✻ Worked for 4m · done". When history no longer reaches the reply's start, what's left of it counts.
+const PLAN_LINE = /^\s*(?:#+\s*)?[^.\n]{0,60}\bplan\b[^.\n]{0,60}:?\s*$/im;
+function replyPlan(text) {
+  const lines = text.split("\n");
+  let end = lines.length, start = 0;
+  for (let i = lines.length - 1; i >= 0; i--) if (/^\s*[✻✳✢*] \S+ for \d/.test(lines[i])) { end = i; break; }
+  for (let i = end - 1; i >= 0; i--) {
+    if (/^❯ \S/.test(lines[i])) { start = i + 1; break; }
+    if (/^[⏺●•] /.test(lines[i])) { start = i; break; }
+  }
+  const out = [];
+  for (const raw of lines.slice(start, end)) {
+    if (/^\[hc\]/.test(raw)) continue;
+    const l = raw.replace(/^[⏺●•] /, "").replace(/^ {2}/, "");
+    const prev = out[out.length - 1];
+    const ind = (x) => x.length - x.trimStart().length;
+    // the terminal wraps long lines: a deeper-indented line that isn't a list item continues the one before
+    if (prev?.trim() && l.trim() && ind(l) > ind(prev) && !/^\s*([-*]|\d+\.)\s/.test(l)) out[out.length - 1] = `${prev} ${l.trim()}`;
+    else out.push(l);
+  }
+  const reply = out.join("\n").trim();
+  return PLAN_LINE.test(reply) ? reply : null;
+}
+const readReplyPlan = (address) => exec("hc", ["read", "--lines", "1500", address]).then((r) => replyPlan(r.stdout ?? ""), () => null);
+
+// Listening TCP ports per herdr terminal: lsof's listeners, matched to a terminal by the HC_TERMINAL_ID every process
+// started in one inherits (read off the nearest parent that still shows it: next-server renames itself). Prints "<terminal> <port>" lines.
+const PORTS_SH = `lsof -nP -iTCP -sTCP:LISTEN -Fpn 2>/dev/null | awk '/^p/{p=substr($0,2)} /^n/{print p, substr($0,2)}' | sort -u |
+while read -r pid addr; do
+  p=$pid; t=
+  while [ -z "$t" ] && [ "\${p:-1}" -gt 1 ]; do
+    t=$(ps -E -ww -o command= -p "$p" 2>/dev/null | grep -o 'HC_TERMINAL_ID=[^ ]*' | head -1 | cut -d= -f2)
+    [ -n "$t" ] || p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+  done
+  [ -n "$t" ] && echo "$t \${addr##*:}"
+done`;
+
+// Resource use per herdr terminal: CPU and memory of its whole process tree, sampled every 10 s, 15 minutes kept.
+const SAMPLE_MS = 10000;
+// The board view is dropped while a tab shows, so the always-shown top bar samples and keeps the history in shared
+// state (it also survives a restart); the board only draws it.
+const SAMPLES = "herdr-board.samples"; // [{cpu: {terminal: % of the machine}, mem: {terminal: bytes}}]
+const SYS = "herdr-board.sys"; // {mem, cores}
+const KEEP = 90;
+const SERIES = ["#53cf91", "#8f7fd1", "#f0a050", "#6fb3f2", "#e88cc8", "#3ec9b4"];
+const bytes = (n) => n >= 1073741824 ? `${(n / 1073741824).toFixed(1)} GiB` : `${Math.round(n / 1048576)} MiB`;
+const paint = (p, color) => globalThis.window.paint_path(p.build(), color).absolute().top(0).left(0).size_full();
+const level = (f) => f < 0.6 ? C.land : f < 0.85 ? "#f0a050" : C.red;
+
+// Server health: error lines in a dev server's recent output (not "0 errors"), and the last one, tidied.
+// Paths and URLs don't count (a request for /build/assets/input-error.js isn't an error); QueryException does.
+const ERR = /(\w*exception\b|\berror\b|\bfatal\b|\bfailed\b|\brefused\b|\bpanic\b|\btraceback\b)/i;
+const isError = (l) => { const x = l.replace(/\S*\/\S*/g, ""); return ERR.test(x) && !/\b(0|no) errors?\b/i.test(x); };
+// a line that shows the server working: ✓ Compiled, "ready", GET / 200, artisan's "/health ..... ~ 0.04ms"
+const OK_LINE = /(✓|\bcompiled\b|\bready\b|\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b.*\b[23]\d\d\b|~\s*[\d.]+\s*ms\s*$)/i;
+function logErrors(text) {
+  // only this run: what follows the last shell prompt (➜ / ❯ / $ / %), so an earlier failed command doesn't count
+  const lines = text.split("\n");
+  let from = 0;
+  for (let i = lines.length - 1; i >= 0; i--) if (/^\s*(➜|❯|\$|%)\s+\S/.test(lines[i])) { from = i + 1; break; }
+  // only errors it hasn't got past: what follows its last healthy line (a compile, a 2xx/3xx request, a served hit)
+  const run = lines.slice(from);
+  let since = run;
+  for (let i = run.length - 1; i >= 0; i--) if (!isError(run[i]) && OK_LINE.test(run[i])) { since = run.slice(i + 1); break; }
+  const bad = since.filter(isError);
+  const last = (bad[bad.length - 1] ?? "").replace(/^\s*\[[\w-]+\]\s*/, "").replace(/[│┃┌┐└┘╭╮╰╯─━]+/g, " ").replace(/\s+/g, " ").trim();
+  return { count: bad.length, last };
+}
+
 // Herdr's agents in the shape the board read from `xo bearings --rows`: one task per agent.
 class Agents {
+  constructor() { this.seen = new Map(); this.replies = new Map(); } // address -> {model|plan, at, busy, key}
+
+  // a Claude agent's reply plan, read again when its status changes and at most once a minute otherwise
+  screenPlan(a) {
+    const c = this.replies.get(a.address);
+    if (!c || (!c.busy && (c.key !== a.status || Date.now() - c.at > 60000))) {
+      const e = { plan: c?.plan ?? null, at: Date.now(), busy: true, key: a.status };
+      this.replies.set(a.address, e);
+      readReplyPlan(a.address).then((p) => { const was = e.plan; e.plan = p; if (Boolean(was) !== Boolean(p)) this.onChange?.(); })
+        .finally(() => { e.busy = false; e.at = Date.now(); });
+    }
+    return this.replies.get(a.address).plan;
+  }
+
+  screenModel(address) {
+    const c = this.seen.get(address);
+    if (!c || (!c.busy && Date.now() - c.at > SCAN_MS)) {
+      const e = { model: c?.model ?? null, at: Date.now(), busy: true };
+      this.seen.set(address, e);
+      exec("hc", ["read", "--lines", "20000", address])
+        .then((r) => { e.model = lastModel(r.stdout ?? "") ?? e.model; }, () => {})
+        .finally(() => { e.busy = false; e.at = Date.now(); });
+    }
+    return this.seen.get(address).model;
+  }
+
   async state() {
     const tabs = new Map(spaces().flatMap((sp) => sp.tabs).map((t) => [t.id, t]));
     const rows = [], bearings = [];
@@ -130,9 +242,12 @@ class Agents {
     for (const [i, a] of list.entries()) {
       const tab = tabs.get(a.tab);
       const title = clean(a.title);
-      rows.push({ key: a.address, project: a.space_name || "space", slug: a.program?.name || a.address, session: a.address, mux: "hc", agent: a.status, session_status: "Live", plan: plans[i],
+      const reply = a.app === "claude-code" ? this.screenPlan(a) : null;
+      // finished with a plan: it waits for your go-ahead
+      const waits = Boolean(reply) && (a.status === "idle" || a.status === "done");
+      rows.push({ key: a.address, project: a.space_name || "space", slug: a.program?.name || a.address, session: a.address, mux: "hc", agent: a.status, session_status: "Live", plan: hasPlan(plans[i]) ? plans[i] : reply ? { reply: true } : null, model: plans[i]?.model || (a.app === "claude-code" ? this.screenModel(a.address) : null),
         pane: a.pane, harness: a.program?.key, title: tab?.named ? tab.name : title && !/^[~/]/.test(title) ? title : tab?.name ?? "" });
-      bearings.push({ key: a.address, kind: KIND[a.status] ?? "done", reason: a.status ?? "", next: "" });
+      bearings.push({ key: a.address, kind: waits ? "needs_you" : KIND[a.status] ?? "done", reason: waits ? "It has a plan for you: open Plan to read it." : a.status ?? "", next: "" });
     }
     return { rows, bearings };
   }
@@ -151,6 +266,13 @@ export default class Board extends View {
     this.part = _props?.part ?? props()?.part;
     this.now = Date.now();
     if (this.part === "plan") return this.initPlan(cx);
+    if (this.part === "servers") return this.initServers(cx);
+    if (this.part === "top") {
+      this.pids = new Map(); // terminal -> its root process
+      this.sys = shared(SYS);
+      this.sample(cx);
+      cx.timer.every(SAMPLE_MS, (cx) => this.sample(cx));
+    }
     if (this.part !== "board") { // the bars only draw what the board shares, and the clock
       cx.timer.every(30000, (cx) => { this.now = Date.now(); cx.notify(); });
       return;
@@ -182,11 +304,14 @@ export default class Board extends View {
       this.configured = true;
       this.refresh(cx);
       this.watchPlans(cx);
+      this.readHealth(cx);
       try { for (const p of await knownAgents()) this.programs[p.key] = p; } catch { /* no icons: letters */ }
       cx.notify();
     });
     // board.<command> from keys.json or `herdr-app do`: works while the board doesn't have the keyboard
     cx.spawn(async (cx) => { for (;;) { this.command(String(await nextCommand()).replace(/^board\./, ""), cx); cx.notify(); } });
+    this.health = []; // [{terminal, pane, tab, name, ports, code, errors, last}]
+    cx.timer.every(10000, (cx) => this.readHealth(cx));
     cx.timer.every(TICK_MS, (cx) => this.tick(cx));
     cx.timer.every(ASK_MS, (cx) => this.readAsks(cx));
     cx.timer.every(30000, (cx) => { this.now = Date.now(); cx.notify(); });
@@ -194,15 +319,157 @@ export default class Board extends View {
 
   // ---- data -------------------------------------------------------------------------------------------------
 
+  sample(cx) {
+    if (this.sampling) return;
+    this.sampling = true;
+    cx.spawn(async (cx) => {
+      try {
+        if (!this.sys) {
+          const [mem, cores] = (await exec("sysctl", ["-n", "hw.memsize", "hw.ncpu"])).stdout.trim().split(/\s+/).map(Number);
+          this.sys = { mem, cores: cores || 1 };
+          setShared(SYS, this.sys);
+        }
+        const live = terminals().filter((t) => t.state === "live" && !String(t.address).includes("/")).map((t) => t.address);
+        await Promise.all(live.filter((t) => !this.pids.has(t)).map(async (t) => {
+          try { this.pids.set(t, JSON.parse((await exec("hc", ["get", t])).stdout).pid); } catch { /* next time */ }
+        }));
+        for (const t of [...this.pids.keys()]) if (!live.includes(t)) this.pids.delete(t);
+        const kids = new Map(), use = new Map();
+        for (const line of (await exec("ps", ["-axo", "pid=,ppid=,pcpu=,rss="])).stdout.split("\n")) {
+          const [pid, ppid, cpu, rss] = line.trim().split(/\s+/).map(Number);
+          if (!pid) continue;
+          use.set(pid, [cpu, rss * 1024]);
+          if (!kids.has(ppid)) kids.set(ppid, []);
+          kids.get(ppid).push(pid);
+        }
+        const cpu = {}, mem = {};
+        for (const [t, root] of this.pids) {
+          let c = 0, m = 0;
+          for (const stack = [root]; stack.length;) {
+            const pid = stack.pop();
+            const [pc, rs] = use.get(pid) ?? [0, 0];
+            c += pc; m += rs;
+            stack.push(...(kids.get(pid) ?? []));
+          }
+          if (use.has(root)) { cpu[t] = c / this.sys.cores; mem[t] = m; }
+        }
+        setShared(SAMPLES, [...(shared(SAMPLES) ?? []), { cpu, mem }].slice(-KEEP));
+      } catch { /* skip this sample */ }
+      this.sampling = false;
+      cx.notify();
+    });
+  }
+
+  // local dev servers: terminals listening on a port (the Running panel's scan, or our own when it's stale), each checked
+  // for an HTTP answer and for error lines in its last 300 lines
+  readHealth(cx) {
+    if (this.checking) return;
+    this.checking = true;
+    cx.spawn(async (cx) => {
+      try {
+        let ports = shared("herdr-board.ports");
+        if (!ports || Date.now() - ports.at > 12000) {
+          const out = {};
+          for (const line of ((await exec("sh", ["-c", PORTS_SH])).stdout ?? "").split("\n")) {
+            const [term, port] = line.trim().split(" ");
+            if (term && /^\d+$/.test(port ?? "")) out[term] = [...new Set([...(out[term] ?? []), Number(port)])].sort((x, y) => x - y);
+          }
+          ports = { at: Date.now(), ports: out };
+          setShared("herdr-board.ports", ports);
+        }
+        const isAgent = new Set(agents().map((a) => a.address));
+        const byTerm = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, p]));
+        const servers = Object.entries(ports.ports).filter(([term]) => !isAgent.has(term) && byTerm.has(term));
+        this.health = await Promise.all(servers.map(async ([term, list]) => {
+          const p = byTerm.get(term);
+          let code = "000";
+          try { code = (await exec("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "2", `http://localhost:${list[0]}/`])).stdout.trim(); } catch { /* down */ }
+          let errs = { count: 0, last: "" };
+          try { errs = logErrors((await exec("hc", ["read", "--lines", "300", term])).stdout ?? ""); } catch { /* no screen */ }
+          return { terminal: term, pane: p.pane, tab: p.tab, name: clean(p.title) || p.program?.name || term, ports: list, code, errors: errs.count, last: errs.last };
+        }));
+      } catch { /* keep the last check */ }
+      this.checking = false;
+      cx.notify();
+    });
+  }
+
   // reads again when the plan hook writes
   watchPlans(cx) {
     cx.spawn(async (cx) => {
+      this.src.onChange = () => this.refresh(cx);
       try { await exec("mkdir", ["-p", stateDir()]); } catch { return; }
       for (;;) {
         try { await watchFolder(stateDir()); } catch { return; } // the 15s safety read still covers it
         this.refresh(cx);
       }
     });
+  }
+
+  // ---- the Running panel: dev servers, then each workspace's terminals ----------------------------------------------
+
+  initServers(cx) {
+    this.ports = new Map(); // terminal -> [port]
+    const scan = (cx) => cx.spawn(async (cx) => {
+      try {
+        const r = await exec("sh", ["-c", PORTS_SH]);
+        const m = new Map();
+        for (const line of (r.stdout ?? "").split("\n")) {
+          const [t, port] = line.trim().split(" ");
+          if (t && /^\d+$/.test(port ?? "")) m.set(t, [...new Set([...(m.get(t) ?? []), Number(port)])].sort((x, y) => x - y));
+        }
+        this.ports = m;
+        setShared("herdr-board.ports", { at: Date.now(), ports: Object.fromEntries(m) }); // the sidebar's open spaces use it too
+      } catch { /* keep the last scan */ }
+      cx.notify();
+    });
+    scan(cx);
+    cx.timer.every(5000, (cx) => scan(cx));
+  }
+
+  serversView() {
+    const isAgent = new Set(agents().map((a) => a.address)); // an agent's own sockets aren't dev servers
+    const ports = (term) => (isAgent.has(term) ? [] : this.ports.get(term) ?? []);
+    const where = new Map();
+    for (const sp of spaces()) for (const tab of sp.tabs) where.set(tab.id, { sp, tab });
+    const all = panes().filter((p) => p.terminal && where.has(p.tab));
+    const go = (p) => {
+      const w = where.get(p.tab);
+      run("space.select", { id: w.sp.id });
+      run("tab.select", { id: p.tab });
+      run("pane.focus", { pane: p.pane });
+      run("layout.select", { stack: "main", child: "work" });
+      setShared(LEFT, Date.now());
+      setShared(VIEW, "work");
+    };
+    const pic = (p) => p.program?.icon ? (p.program.tint ? svg(p.program.icon).size(13).flex_none().text_color(C.muted) : image(p.program.icon).w(13).h(13).flex_none())
+      : div().w(13).h(13).flex_none();
+    const mark = (st) => st === "working" ? icon("spinner", 10, C.work).spin(900) : st ? div().w(6).h(6).rounded(3).flex_none()
+      .bg({ blocked: C.you, done: C.land, idle: C.done }[st] ?? C.dim) : null;
+    const portChip = (p, port) => div().id(`port-${p.pane}-${port}`).flex_none().px(5).rounded(3).bg(C.landBg).border(1).border_color(C.landLine)
+      .font_family(MONO).text_size(10.5).text_color(C.land).cursor_pointer().hover((st) => st.opacity(0.8)).tooltip(`Open http://localhost:${port}`)
+      .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [`http://localhost:${port}`]).catch(() => {}); }).child(`:${port}`);
+    const row = (p, sub) => h_flex().id(`run-${p.pane}`).w_full().gap(7).px(8).py(5).rounded(5).items_center().cursor_pointer()
+      .hover((st) => st.bg(C.hover)).on_click(() => go(p))
+      .child(pic(p))
+      .child(v_flex().flex_1().min_w(0)
+        .child(div().truncate().font_family(SANS).text_size(12.5).text_color(C.text).child(clean(p.title) || p.program?.name || p.terminal))
+        .when(!!sub, (el) => el.child(div().truncate().font_family(MONO).text_size(10.5).text_color(C.dim).child(sub))))
+      .children(ports(p.terminal).map((port) => portChip(p, port)))
+      .children(mark(p.status) ? [mark(p.status)] : []);
+    const head = (label, n) => h_flex().w_full().gap(6).px(8).pt(10).pb(4).items_center()
+      .child(mono(10, C.dim, label)).child(mono(10, C.dim, String(n)));
+
+    const servers = all.filter((p) => ports(p.terminal).length);
+    return v_flex().id("running").size_full().bg(C.top).border_l(1).border_color(C.line)
+      .child(h_flex().w_full().flex_none().h(38).px(12).gap(8).items_center().border_b(1).border_color(C.line)
+        .child(div().flex_1().font_family(MONO).text_size(11).text_color(C.muted).child("RUNNING"))
+        .child(div().id("running-hide").px(5).rounded(4).cursor_pointer().text_color(C.dim).hover((st) => st.bg(C.raised).text_color(C.text))
+          .tooltip("Collapse").on_click(() => run("layout.hide", { id: "servers" })).child(mono(13, C.dim, "»"))))
+      .child(v_flex().id("running-body").w_full().flex_1().min_h(0).overflow_y_scrollbar().px(6).pb(10)
+        .child(head("DEV SERVERS", servers.length))
+        .children(servers.map((p) => row(p, where.get(p.tab).sp.name)))
+        .when(!servers.length, (el) => el.child(div().px(8).py(4).font_family(SANS).text_size(12).text_color(C.dim).child("No dev servers running."))));
   }
 
   // ---- the plan dialog ------------------------------------------------------------------------------------------
@@ -214,7 +481,7 @@ export default class Board extends View {
     this.msg = "";
     const load = (cx) => cx.spawn(async (cx) => {
       this.plan = await planState(this.addr);
-      try { this.text = this.plan?.plan_file ? await readTextFile(this.plan.plan_file) : ""; } catch { this.text = ""; }
+      try { this.text = this.plan?.plan_file ? await readTextFile(this.plan.plan_file) : (await readReplyPlan(this.addr)) ?? ""; } catch { this.text = ""; }
       try { this.msg = JSON.parse((await exec("hc", ["get", this.addr])).stdout)?.status?.msg ?? ""; } catch { this.msg = ""; }
       cx.notify();
     });
@@ -252,6 +519,7 @@ export default class Board extends View {
       .child(h_flex().w_full().flex_none().gap(10).px(18).py(12).items_center().border_b(1).border_color(C.line)
         .child(div().w(8).h(8).rounded(4).bg(color))
         .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(15).font_weight(600).child(clean(a?.title) || a?.program?.name || this.addr))
+        .when(!!this.plan?.model, (el) => el.child(mono(11, C.muted, modelName(this.plan.model))))
         .child(mono(11, color, status))
         .when(!!a, (el) => el.child(this.btn("plan-go", "Go to agent", "plain", () => {
           close();
@@ -273,7 +541,7 @@ export default class Board extends View {
             .child(div().flex_1().min_w(0).font_family(SANS).text_size(13).text_color(it.state === "completed" ? C.muted : C.text).child(it.text)))))
           .child(div().h(12)))
         .when(!this.text, (el) => el.child(div().py(30).w_full().flex().justify_center().font_family(SANS).text_size(13).text_color(C.dim)
-          .child(this.plan ? "This agent has a todo list but no plan file." : "No plan yet. Ask the agent for a plan (plan mode) and it shows up here.")))
+          .child(this.plan?.todos?.length ? "This agent has a todo list but no plan file." : "No plan yet. Ask the agent for a plan (plan mode) and it shows up here.")))
         .children(this.text ? md : []));
   }
 
@@ -495,6 +763,7 @@ export default class Board extends View {
 
   render() {
     if (this.part === "plan") return this.planView();
+    if (this.part === "servers") return this.serversView();
     if (this.part === "top") return this.top();
     if (this.part === "bottom") return this.bottom();
     if (this.part === "board") return this.board();
@@ -534,6 +803,98 @@ export default class Board extends View {
       .child(mono(10, C.dim, label))
       .child(div().font_family(SANS).text_size(22).text_color(color).child(value))
       .children(extra ? [extra] : []);
+  }
+
+  tile(label, right) {
+    return v_flex().h_full().min_w(0).px(12).py(9).gap(4).rounded(8).bg(C.card).border(1).border_color(C.line)
+      .child(h_flex().w_full().gap(6).items_center().child(div().flex_1().child(mono(10, C.dim, label))).children(right ? [right] : []));
+  }
+
+  // a half-ring meter, 0..1, green to orange to red
+  gauge(label, f, value, sub) {
+    const cx = 66, cy = 66, r = 54;
+    const arc = (v) => {
+      const a = Math.PI * (1 - Math.max(0.002, Math.min(1, v)));
+      return PathBuilder.stroke(10).move_to(cx - r, cy).arc_to(r, r, 0, false, true, cx + r * Math.cos(a), cy - r * Math.sin(a));
+    };
+    return this.tile(label).w(176).flex_none().items_center()
+      .child(div().relative().w(132).h(72).flex_none()
+        .child(paint(arc(1), C.raised))
+        .child(paint(arc(f), level(f)))
+        .child(div().absolute().left(0).bottom(-2).w_full().flex().justify_center()
+          .child(div().font_family(SANS).text_size(19).text_color(level(f)).child(value))))
+      .child(mono(10, C.dim, sub));
+  }
+
+  // stacked areas per terminal over the kept samples, newest on the right
+  chart(label, key, fmt) {
+    const S = shared(SAMPLES) ?? [], names = new Map(panes().filter((p) => p.terminal).map((p) => [p.terminal, clean(p.title) || p.program?.name || p.terminal]));
+    const last = S[S.length - 1]?.[key] ?? {};
+    const top = Object.keys(last).sort((x, y) => last[y] - last[x]).slice(0, SERIES.length);
+    const total = (s) => Object.values(s[key]).reduce((a, b) => a + b, 0);
+    const max = Math.max(key === "cpu" ? 5 : 268435456, ...S.map(total)) * 1.15;
+    const x = (i) => `${((KEEP - S.length + i) / (KEEP - 1)) * 100}%`;
+    const y = (v) => `${100 - (v / max) * 100}%`;
+    const base = S.map(() => 0), layers = [];
+    top.forEach((t, k) => {
+      const upper = S.map((s, i) => base[i] + (s[key][t] ?? 0));
+      if (S.length > 1) {
+        const pts = [...upper.map((v, i) => [x(i), y(v)]), ...base.map((v, i) => [x(i), y(v)]).reverse()];
+        layers.push(paint(PathBuilder.fill().add_polygon(pts, true), SERIES[k] + "66"));
+        let line = PathBuilder.stroke(1.5).move_to(x(0), y(upper[0]));
+        upper.forEach((v, i) => { if (i) line = line.line_to(x(i), y(v)); });
+        layers.push(paint(line, SERIES[k]));
+      }
+      upper.forEach((v, i) => { base[i] = v; });
+    });
+    const now = S.length ? total(S[S.length - 1]) : 0;
+    return this.tile(label, mono(11, C.text, S.length ? fmt(now) : "…")).flex_1()
+      .child(div().relative().w_full().flex_1().min_h(40).border_b(1).border_color(C.line2)
+        .children(layers)
+        .child(div().absolute().top(0).left(0).child(mono(9.5, C.dim, fmt(max / 1.15))))
+        .when(S.length < 2, (el) => el.child(div().absolute().top(16).left(0).w_full().flex().justify_center().child(mono(10, C.dim, "collecting…")))))
+      .child(h_flex().w_full().gap(10).overflow_hidden()
+        .child(mono(9.5, C.dim, "15m"))
+        .children(top.map((t, k) => h_flex().gap(4).items_center().min_w(0)
+          .child(div().w(7).h(7).rounded(2).flex_none().bg(SERIES[k]))
+          .child(div().max_w(150).truncate().font_family(SANS).text_size(10.5).text_color(C.muted).child(`${names.get(t) ?? t} ${fmt(last[t])}`)))));
+  }
+
+  // local servers: up or not, and errors in their logs
+  healthTile() {
+    const hs = this.health;
+    const bad = (h) => h.code === "000" || Number(h.code) >= 500 || h.errors > 0;
+    const state = (h) => h.code === "000" ? "down" : Number(h.code) >= 500 ? `HTTP ${h.code}` : h.errors ? plural(h.errors, "error") : "OK";
+    const go = (h) => {
+      run("tab.select", { id: h.tab });
+      run("pane.focus", { pane: h.pane });
+      run("layout.select", { stack: "main", child: "work" });
+      setShared(VIEW, "work");
+    };
+    const worst = hs.find(bad);
+    return this.tile("SERVERS", mono(11, !hs.length ? C.dim : worst ? C.red : C.land, !hs.length ? "none" : worst ? "needs a look" : "healthy")).w(300).flex_none()
+      .child(v_flex().id("health-list").w_full().flex_1().min_h(0).gap(3).overflow_y_scrollbar()
+        .children(hs.map((h) => v_flex().id(`health-${h.terminal}`).w_full().px(6).py(3).rounded(5).cursor_pointer().hover((st) => st.bg(C.hover))
+          .on_click(() => go(h))
+          .child(h_flex().w_full().gap(6).items_center()
+            .child(div().w(7).h(7).rounded(4).flex_none().bg(bad(h) ? C.red : C.land))
+            .child(div().flex_1().min_w(0).truncate().font_family(SANS).text_size(12).text_color(C.text).child(h.name))
+            .child(mono(10, C.dim, h.ports.map((p) => `:${p}`).join(" ")))
+            .child(mono(10.5, bad(h) ? C.red : C.land, state(h))))
+          .when(!!h.errors && !!h.last, (el) => el.child(div().pl(13).truncate().font_family(MONO).text_size(10).text_color(C.muted).child(h.last)))))
+        .when(!hs.length, (el) => el.child(div().py(10).font_family(SANS).text_size(12).text_color(C.dim).child("No local servers running."))));
+  }
+
+  dashboard() {
+    const S = shared(SAMPLES) ?? [], last = S[S.length - 1], sys = shared(SYS);
+    const cpu = last ? Object.values(last.cpu).reduce((a, b) => a + b, 0) : 0;
+    const mem = last ? Object.values(last.mem).reduce((a, b) => a + b, 0) : 0;
+    return div().w_full().h(168).flex_none().flex().flex_row().gap(10)
+      .child(this.gauge("CPU", cpu / 100, `${cpu.toFixed(1)}%`, sys ? `of ${sys.cores} cores` : "…"))
+      .child(this.gauge("MEMORY", sys ? mem / sys.mem : 0, bytes(mem), sys ? `of ${bytes(sys.mem)}` : "…"))
+      .child(this.healthTile())
+      .child(this.chart("CPU BY TERMINAL", "cpu", (v) => `${(v ?? 0).toFixed(1)}%`))
+      .child(this.chart("MEMORY BY TERMINAL", "mem", (v) => bytes(v ?? 0)));
   }
 
   week() {
@@ -582,17 +943,10 @@ export default class Board extends View {
         .child(this.btn(`no-${t.key}`, "No  n", "plain", (cx) => { this.confirm = null; cx.notify(); }));
     } else if (t.kind === "needs_you") {
       actions = h_flex().gap(6)
-        .child(this.btn(`answer-${t.key}`, "Answer", "you", (cx) => this.setFocus(cx, true, t)))
-        .when(!!r.session, (el) => el.child(this.btn(`go-${t.key}`, "Go to agent", "plain", (cx) => this.goTo(cx, t))));
+        .child(this.btn(`answer-${t.key}`, "Answer", "you", (cx) => this.setFocus(cx, true, t)));
     } else if (moves(t).length) {
       actions = h_flex().gap(6)
-        .children(moves(t).map((w) => this.btn(`${w}-${t.key}`, LABEL[w], w === "merge" || w === "land" ? "land" : "plain", (cx) => this.ask(cx, t, w))))
-        .when(!!r.session, (el) => el.child(this.btn(`go-${t.key}`, "Go to agent", "plain", (cx) => this.goTo(cx, t))));
-    } else if (t.kind === "done") {
-      actions = h_flex().gap(6).child(this.btn(`archive-${t.key}`, LABEL.remove, "plain", (cx) => this.ask(cx, t, "remove")))
-        .child(this.btn(`go-${t.key}`, "Go to agent", "plain", (cx) => this.goTo(cx, t)));
-    } else if (r.session) {
-      actions = h_flex().gap(6).child(this.btn(`go-${t.key}`, "Go to agent", "plain", (cx) => this.goTo(cx, t)));
+        .children(moves(t).map((w) => this.btn(`${w}-${t.key}`, LABEL[w], w === "merge" || w === "land" ? "land" : "plain", (cx) => this.ask(cx, t, w))));
     }
 
     // a flex row (stretching, unlike h_flex) so the colour bar on the left runs the card's full height
@@ -605,8 +959,13 @@ export default class Board extends View {
       .child(h_flex().w_full().gap(6).items_center()
         .child(this.glyph(t, times))
         .child(chip(t.project))
+        .when(!!r.model, (el) => el.child(div().flex_none().px(5).rounded(3).bg(C.raised).font_family(MONO).text_size(10.5).text_color(C.soft).child(modelName(r.model))))
         .child(div().flex_1().min_w(0).truncate().font_family(MONO).text_size(11).text_color(C.dim).child(t.slug))
-        .child(mono(11, t.kind === "needs_you" ? C.you : t.kind === "ready" ? C.land : C.dim, when)))
+        .child(mono(11, t.kind === "needs_you" ? C.you : t.kind === "ready" ? C.land : C.dim, when))
+        .when(t.kind === "done" && !confirming && !(a && a.state !== "done"), (el) => el.child(div().id(`close-${t.key}`).flex_none().p(2).rounded(4)
+          .cursor_pointer().text_color(C.dim).hover((st) => st.bg(C.raised).text_color(C.text)).tooltip("Close agent")
+          .on_click((_e, cx) => { cx.stop_propagation(); this.ask(cx, t, "remove"); })
+          .child(svg("mods/workspace-chrome/x.svg").size(12)))))
       .child(div().font_family(SANS).text_size(13).text_color(C.text).child(r.title || t.slug))
       .when(t.kind === "needs_you", (el) => el.child(v_flex().px(8).py(6).rounded(4).bg(C.youAsk)
         .child(mono(10, C.you, "ASKS YOU"))
@@ -637,13 +996,7 @@ export default class Board extends View {
     const next = needs.slice().sort((a, b) => (times.get(a.row.session)?.changed ?? 0) - (times.get(b.row.session)?.changed ?? 0))[0];
     const projects = [...new Set(this.tasks.map((t) => t.project))].sort();
 
-    const count = (k) => String(this.tasks.filter((t) => t.kind === k).length);
-    const strip = dimmed(div().w_full().flex_none().flex().flex_row().gap(10)
-      .child(this.stat("AGENTS", String(this.tasks.length), C.text))
-      .child(this.stat("IDLE", count("done"), C.done))
-      .child(this.stat("WORKING", count("in_flight"), C.work))
-      .child(this.stat("NEEDS YOU", count("needs_you"), C.you))
-      .child(this.stat("DONE", count("ready"), C.land)));
+    const strip = dimmed(this.dashboard());
 
     const banner = next && h_flex().w_full().flex_none().gap(14).px(14).py(10).rounded(8).items_center()
       .bg(C.youBg).border(1).border_color(C.youLine)
@@ -688,7 +1041,7 @@ export default class Board extends View {
             .child(this.btn("all-no", "No", "plain", (cx) => { this.confirm = null; cx.notify(); }))
           : this.btn("archive-all", "Close all", "plain", (cx) => { this.confirm = { key: "*", do: "remove" }; cx.notify(); })));
       const empty = { needs_you: "Nothing needs you.", in_flight: "Nothing running.", ready: "Nothing finished.", done: "No idle agents." }[k];
-      return v_flex().id(`col-${k}`).flex_1().min_w(0).min_h(0).gap(8)
+      return v_flex().id(`col-${k}`).flex_1().min_w(0).min_h(0).gap(8).p(8).rounded(10).bg("#161619").border(1).border_color(C.line)
         .when(this.focus && k !== "needs_you", (el) => el.opacity(0.18))
         .child(head)
         .child(v_flex().id(`list-${k}`).w_full().flex_1().min_h(0).gap(8).overflow_y_scrollbar()
@@ -774,6 +1127,11 @@ export default class Board extends View {
       tabEl(`tab-${t.id}`, view === "work" && t.active, [
         ...(t.status === "blocked" ? [div().w(7).h(7).rounded(4).bg(C.you)] : t.status === "working" ? [icon("spinner", 10, C.work).spin(900)] : []),
         div().child(t.name),
+        // × closes the tab (as the shipped tab bar does); its press doesn't select or drag
+        div().id(`close-${t.id}`).flex_none().p(2).rounded(3).text_color(C.dim).hover((st) => st.bg(C.raised).text_color(C.text))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: t.id }); })
+          .child(svg("mods/workspace-chrome/x.svg").size(11)),
       ], () => { run("tab.select", { id: t.id }); run("layout.select", { stack: "main", child: "work" }); setShared(VIEW, "work"); },
       focus && t.status !== "blocked"));
     return h_flex().id("top").size_full().bg(C.top).border_b(1).border_color(C.line)
@@ -781,8 +1139,16 @@ export default class Board extends View {
         .child(div().font_family(MONO).text_size(12).font_weight(700).text_color(C.accent).child("H E R D R")))
       .child(boardTab)
       .child(div().w(1).h(16).mx(4).bg(C.line2))
-      .child(h_flex().id("tabs").flex_1().min_w(0).h_full().overflow_x_scrollbar().children(tabs))
+      .child(h_flex().id("tabs").flex_1().min_w(0).h_full().overflow_x_scrollbar().children(tabs)
+        // + opens Herdr's new menu: a terminal or one of the installed agents (⌘T does the same here)
+        .child(noDrag(div().id("tab-new").flex_none().ml(4).px(8).h(24).rounded(5).flex().items_center().cursor_pointer()
+          .text_color(C.dim).hover((st) => st.bg(C.hover).text_color(C.text)).tooltip("New tab: terminal or agent  ⌘T")
+          .on_click(() => run("mod.open", { name: "new-menu" })).child(div().text_size(15).child("+")))))
       .child(h_flex().h_full().flex_none().pr(12).gap(6).items_center()
+        .child(noDrag(div().id("running-toggle").px(8).py(2).mr(8).rounded(5).cursor_pointer().border(1)
+          .border_color(findNode(layout(), "servers")?.hidden ? C.line2 : C.accentDim).hover((st) => st.bg(C.hover))
+          .on_click(() => run(findNode(layout(), "servers")?.hidden ? "layout.show" : "layout.hide", { id: "servers" }))
+          .child(mono(11, findNode(layout(), "servers")?.hidden ? C.muted : C.text, "▤ Running"))))
         .child(mono(11, C.muted, "commands"))
         .children((mac ? ["⌘", "⇧", "P"] : ["Ctrl", "Shift", "P"]).map((k) =>
           div().px(5).rounded(3).bg(C.raised).font_family(MONO).text_size(10).text_color(C.muted).child(k))));

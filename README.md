@@ -5,9 +5,10 @@ This folder holds my current Herdr desktop layout, **herdr-board**, and the step
 The window has three parts:
 
 - **Top bar:** a pinned **Board** tab with a "needs you" badge, then the current space's tabs.
-- **Body:** the spaces sidebar (220 px) and a main area that shows either:
+- **Body:** the spaces sidebar (220 px), where each space folds open to list its terminals, their agent status and the ports its dev servers listen on, and a main area that shows either:
   - the **Board**: every agent as a card in four columns: NEEDS YOU, WORKING, READY TO LAND, DONE
   - the **work** view, with the active tab's panes
+- **Running panel** (right, toggled with **▤ Running** in the top bar): lists dev servers by port, shows whether each one answers on localhost, the errors in its logs, and its CPU and memory use. Click a port to open it in the browser.
 - **Status bar:** counts of tasks, working, need you, done and idle.
 
 Press **F** for focus mode. It fades everything except NEEDS YOU and shows the selected agent's live terminal, so you can answer it there. If a Claude Code card's agent has written a plan, the card gets a **Plan** button. It opens the plan with its todo progress.
@@ -19,14 +20,15 @@ Tested with Herdr app 0.1.16 and herdr CLI 0.9.5.
 | File | Goes to | What it is |
 |---|---|---|
 | `herdr-app/layouts/herdr-board.json` | `~/.config/herdr-app/layouts/` | The layout: blocks, sizes, colors (graphite, purple accent), fonts (JetBrains Mono and Geist) |
-| `herdr-app/mods/herdr-board/` | `~/.config/herdr-app/mods/` | The mod that draws the top bar, the board and the status bar |
+| `herdr-app/mods/herdr-board/` | `~/.config/herdr-app/mods/` | The mod that draws the top bar, the board, the Running panel and the status bar |
+| `herdr-app/mods/spaces-tree/` | `~/.config/herdr-app/mods/` | The spaces sidebar: a copy of Herdr's `spaces` mod where each space folds open |
 | `herdr-app/keys.json` | `~/.config/herdr-app/` | My keybindings (see below) |
 | `herdr-app/settings.json` | `~/.config/herdr-app/` | Dark appearance, sounds on, zoom 1 |
 | `herdr/config.toml` | `~/.config/herdr/` | herdr CLI/TUI config: onboarding off, system notifications, dot status indicators |
 | `claude/hooks/herdr-board-plan.py` | `~/.claude/hooks/` | Claude Code hook that records each agent's plan file and todos for the Plan button |
 | `install.sh` | – | Does all of the above |
 
-The layout also uses Herdr's built-in `spaces` mod, and Herdr installs that itself. JetBrains Mono, Geist and Geist Mono come with Herdr.
+JetBrains Mono, Geist and Geist Mono come with Herdr. The Running panel and sidebar use `lsof`, `curl`, `ps` and `git`. Memory stats and opening ports in the browser use the macOS commands `sysctl hw.memsize` and `open`, so on Linux those two parts may stay empty or do nothing.
 
 ## Install on macOS or Linux (quick)
 
@@ -64,9 +66,10 @@ Copy this folder to the new machine with git, AirDrop, a USB stick or `scp -r`. 
                      "hooks": [{ "type": "command", "command": "python3 '~/.claude/hooks/herdr-board-plan.py'", "timeout": 5 }] }]
    ```
    Replace `~` with your full home path. Inside quotes the shell doesn't expand `~`.
-7. Check the mod and switch to the layout:
+7. Check the mods and switch to the layout:
    ```sh
    herdr-app check ~/.config/herdr-app/mods/herdr-board
+   herdr-app check ~/.config/herdr-app/mods/spaces-tree
    herdr-app do layout.switch --name herdr-board
    ```
    You can also press Cmd+Shift+L (Ctrl+Shift+L on Linux and Windows) to cycle through layouts.
@@ -75,7 +78,7 @@ Copy this folder to the new machine with git, AirDrop, a USB stick or `scp -r`. 
 
 | Keys | Action |
 |---|---|
-| Cmd+T / Cmd+W | New tab / close tab |
+| Cmd+T / Cmd+W | New-tab menu (pick a terminal or agent) / close tab |
 | Cmd+1…9, Ctrl+1…9 | Go to tab N / go to space N |
 | Cmd+] / Cmd+[ | Next / previous agent |
 | Cmd+Alt+] / Cmd+Alt+[ | Next / previous space |

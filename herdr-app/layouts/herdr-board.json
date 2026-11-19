@@ -88,7 +88,7 @@
               "id": "spaces",
               "type": "block",
               "content": {
-                "mod": "spaces"
+                "mod": "spaces-tree"
               }
             }
           ]
@@ -130,6 +130,22 @@
               }
             }
           ]
+        },
+        {
+          "id": "servers",
+          "type": "block",
+          "size": {
+            "px": 300
+          },
+          "min": 220,
+          "max": 560,
+          "background": "chrome",
+          "content": {
+            "mod": "herdr-board",
+            "props": {
+              "part": "servers"
+            }
+          }
         },
         {
           "id": "focus-term",

@@ -34,6 +34,7 @@ put() { # put <source> <destination>: copy, keeping whatever was there as a back
 echo "==> Copying the layout, mod, keys and settings"
 put "$HERE/herdr-app/layouts/herdr-board.json" "$APP_HOME/layouts/herdr-board.json"
 put "$HERE/herdr-app/mods/herdr-board"         "$APP_HOME/mods/herdr-board"
+put "$HERE/herdr-app/mods/spaces-tree"         "$APP_HOME/mods/spaces-tree"
 put "$HERE/herdr-app/keys.json"                "$APP_HOME/keys.json"
 put "$HERE/herdr-app/settings.json"            "$APP_HOME/settings.json"
 put "$HERE/herdr/config.toml"                  "$HOME/.config/herdr/config.toml"
@@ -65,8 +66,9 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 json.dump(s, open(path, "w"), indent=2)
 PY
 
-echo "==> Checking the mod"
+echo "==> Checking the mods"
 herdr-app check "$APP_HOME/mods/herdr-board"
+herdr-app check "$APP_HOME/mods/spaces-tree"
 herdr-app do layout.switch --name herdr-board 2>/dev/null \
   || echo "Open Herdr and press Ctrl+Shift+L (or Cmd+Shift+L) until 'herdr-board' shows."
 echo "Done. Restart running Claude Code sessions so they load the new hook."
