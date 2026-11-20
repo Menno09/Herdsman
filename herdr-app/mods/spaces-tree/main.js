@@ -8,7 +8,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, agents, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -76,6 +76,10 @@ while read -r pid addr; do
   [ -n "$t" ] && echo "$t \${addr##*:}"
 done`;
 const PORTS = "herdr-board.ports"; // shared: {at, ports: {terminal: [port]}}
+// The PR a chat is about: the last GitHub PR link on its screen (one it made, reviews or was given), shown while open.
+const PR_RE = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g;
+const PR_MS = 20000; // how often chats' screens are read for PR links
+const PR_STATE_MS = 120000; // how long a PR's state from gh is trusted
 const cleanTitle = (x) => (x ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
 export default class Spaces extends View {
@@ -106,6 +110,10 @@ export default class Spaces extends View {
     try { this.expanded = new Set(JSON.parse(localStorage.getItem("expanded") ?? "[]")); } catch { this.expanded = new Set(); }
     this.scanning = false;
     cx.timer.every(5000, (cx) => this.scanPorts(cx));
+    this.prs = {}; // terminal -> PR url
+    this.prState = new Map(); // url -> {at, number, state, isDraft, title}
+    this.scanPrs(cx);
+    cx.timer.every(PR_MS, (cx) => this.scanPrs(cx));
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // Refresh only when the refs could have changed (see `due`).
@@ -126,6 +134,36 @@ export default class Spaces extends View {
         setShared(PORTS, { at: Date.now(), ports: out });
       } catch { /* the next tick tries again */ }
       this.scanning = false;
+      cx.notify();
+    });
+  }
+
+  scanPrs(cx) {
+    if (!this.expanded.size || this.prScanning) return;
+    this.prScanning = true;
+    cx.spawn(async (cx) => {
+      try {
+        const prs = {};
+        for (const a of agents()) {
+          if (a.address.includes("/")) continue; // shortcut: local chats only
+          try {
+            const links = ((await exec("hc", ["read", "--lines", "3000", a.address])).stdout ?? "").match(PR_RE);
+            if (links) prs[a.address] = links[links.length - 1];
+          } catch { /* gone */ }
+        }
+        for (const url of new Set(Object.values(prs))) {
+          if (Date.now() - (this.prState.get(url)?.at ?? 0) < PR_STATE_MS) continue;
+          // each logged-in gh account in turn (work and personal repos), without switching the active one
+          const r = (await exec("sh", ["-c", `gh pr view "$1" --json number,state,isDraft,title 2>/dev/null && exit
+            for u in $(gh auth status 2>&1 | sed -n 's/.*account \\([^ ]*\\).*/\\1/p'); do
+              GH_TOKEN=$(gh auth token --user "$u") gh pr view "$1" --json number,state,isDraft,title 2>/dev/null && exit
+            done; exit 1`, "sh", url]).catch(() => null));
+          try { this.prState.set(url, { at: Date.now(), ...JSON.parse(r.stdout) }); }
+          catch { this.prState.set(url, { at: Date.now(), state: null }); } // no access or no gh: no chip
+        }
+        this.prs = prs;
+      } catch { /* the next tick tries again */ }
+      this.prScanning = false;
       cx.notify();
     });
   }
@@ -158,6 +196,12 @@ export default class Spaces extends View {
       const pic = p.program?.icon ? (p.program.tint ? svg(p.program.icon).size(13).flex_none().text_color(t.muted) : image(p.program.icon).w(13).h(13).flex_none())
         : div().size(13).flex_none();
       const open = agentsHere.has(p.terminal) ? [] : ports[p.terminal] ?? [];
+      const prUrl = this.prs?.[p.terminal];
+      const pr = prUrl && this.prState.get(prUrl);
+      const prChip = pr?.state === "OPEN" ? [div().id(`pr-${p.pane}`).flex_none().px(4).rounded(3).border_1().border_color(t.border)
+        .text_size(10.5).text_color(pr.isDraft ? t.muted : t.ansi2).cursor_pointer().hover((st) => st.bg(t.raised))
+        .tooltip(`${pr.isDraft ? "Draft PR" : "Open PR"} #${pr.number}: ${pr.title}`)
+        .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [prUrl]).catch(() => {}); }).child(`#${pr.number}`)] : [];
       return h_flex().id(`run-${p.pane}`).h(26).flex_none().pl(36).pr(8).gap(7).items_center().rounded(6).cursor_pointer()
         .hover((st) => st.bg(t.hover)).on_click(() => go(p))
         .child(pic)
@@ -165,6 +209,7 @@ export default class Spaces extends View {
         .children(open.map((port) => div().id(`port-${p.pane}-${port}`).flex_none().px(4).rounded(3).border_1().border_color(t.border)
           .text_size(10.5).text_color(t.ansi2).cursor_pointer().hover((st) => st.bg(t.raised)).tooltip(`Open http://localhost:${port}`)
           .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [`http://localhost:${port}`]).catch(() => {}); }).child(`:${port}`)))
+        .children(prChip)
         .children(mark(p.status) ? [mark(p.status)] : []);
     });
   }

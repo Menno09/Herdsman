@@ -11,7 +11,7 @@ That one line covers macOS and Linux. Read [Install](#install) first. The script
 The window has three parts:
 
 - **Top bar:** a pinned **Board** tab with a "needs you" badge, then the current space's tabs.
-- **Body:** the spaces sidebar (220 px), where each space folds open to list its terminals, their agent status and the ports its dev servers listen on, and a main area that shows either:
+- **Body:** the spaces sidebar (220 px), where each space folds open to list its terminals, their agent status, the ports its dev servers listen on and the open PR each chat is about (the last GitHub PR link on its screen; click to open it, uses `gh`), and a main area that shows either:
   - the **Board**: every agent as a card in four columns: NEEDS YOU, WORKING, READY TO LAND, DONE
   - the **work** view, with the active tab's panes
 - **Running panel** (right, toggled with **▤ Running** in the top bar): lists dev servers by port, shows whether each one answers on localhost, the errors in its logs, and its CPU and memory use. Click a port to open it in the browser.
