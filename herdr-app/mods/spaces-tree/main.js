@@ -293,6 +293,7 @@ export default class Spaces extends View {
   refreshMachines(cx) {
     cx.spawn(async cx => {
       try { const r = await hc(["machine", "ls", "--json"]); if (r.code === 0) this.machines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary); } catch {}
+      try { const r = await hc(["server", "status", "--json"]); if (r.code === 0) this.coreName = JSON.parse(r.stdout).core?.name; } catch {}
       cx.notify();
     });
   }
@@ -692,6 +693,29 @@ export default class Spaces extends View {
         // A block above (another mod's) growing, or the window resizing, shrinks this list and can push the active space out.
         .on_size_change((_size, cx) => { if (this.activeAt >= 0) { this.scroll.scroll_to_item(this.activeAt); cx.notify(); } })
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
-        .children(list));
+        .children(list))
+      .when(!collapsed, el => el.child(this.devices(t)));
+  }
+
+  // Bottom left: the machines this Herdr runs agents on, this computer first, each with whether it's reachable.
+  devices(t) {
+    const live = new Map(machines().map((m) => [m.name, m.layout]));
+    const dot = (layout) => div().size(6).flex_none().rounded(3).bg(layout === "ready" ? t.done : layout === "loading" ? t.working : t.blocked);
+    const row = (id, name, sub, layout, why) => h_flex().id(`device-${id}`).h(24).flex_none().px(8).gap(8).items_center().rounded(6)
+      .when(Boolean(why), (el) => el.tooltip(why))
+      .child(dot(layout))
+      .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(name))
+      .child(div().flex_none().text_size(10.5).text_color(t.dim).child(sub));
+    const others = this.machines ?? [];
+    return v_flex().flex_none().px(8).pt(6).pb(8).border_t_1().border_color(t.border)
+      .child(h_flex().h(26).pl(8).pr(2).items_center().justify_between().text_size(11.5).text_color(t.dim)
+        .child(`Devices ${1 + others.length}`)
+        .child(div().id("device-add").px(6).py(2).rounded(5).text_size(11).hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Connect a machine over SSH").on_click(() => openOverlay({ mod: "machine-add", kind: "dialog", width: 560 })).child("+ Add")))
+      .child(row("local", this.coreName ?? "This computer", "this computer", "ready"))
+      .children(others.map((m) => {
+        const layout = live.get(m.name) ?? (m.state === "unreachable" ? "unavailable" : "loading");
+        return row(m.name, m.name, layout === "ready" ? "connected" : layout === "loading" ? "connecting" : "offline", layout, m.why);
+      }));
   }
 }

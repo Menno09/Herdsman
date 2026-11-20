@@ -14,6 +14,7 @@ The window has three parts:
 - **Body:** the spaces sidebar (220 px), where each space folds open to list its terminals, their agent status, the ports its dev servers listen on and the open PR each chat is about (the last GitHub PR link on its screen; click to open it, uses `gh`), and a main area that shows either:
   - the **Board**: every agent as a card in four columns: NEEDS YOU, WORKING, READY TO LAND, DONE
   - the **work** view, with the active tab's panes
+- **Devices** (bottom of the sidebar): this computer and every machine added over SSH, each with a green (connected), purple (connecting) or red (offline) dot. **+ Add** opens Herdr's add-machine dialog.
 - **Running panel** (right, toggled with **▤ Running** in the top bar): lists dev servers by port, shows whether each one answers on localhost, the errors in its logs, and its CPU and memory use. Click a port to open it in the browser.
 - **Status bar:** counts of tasks, working, need you, done and idle.
 
