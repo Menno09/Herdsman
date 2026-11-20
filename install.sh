@@ -39,6 +39,11 @@ put "$HERE/herdr-app/keys.json"                "$APP_HOME/keys.json"
 put "$HERE/herdr-app/settings.json"            "$APP_HOME/settings.json"
 put "$HERE/herdr/config.toml"                  "$HOME/.config/herdr/config.toml"
 put "$HERE/claude/hooks/herdr-board-plan.py"   "$HOME/.claude/hooks/herdr-board-plan.py"
+# Claude starts parallel helpers as Herdr terminals (visible on the board): appended once, never overwrites
+if ! grep -qs "Parallel helpers inside Herdr" "$HOME/.claude/CLAUDE.md"; then
+  { [ -s "$HOME/.claude/CLAUDE.md" ] && echo; cat "$HERE/claude/CLAUDE-herdr.md"; } >> "$HOME/.claude/CLAUDE.md"
+  echo "    $HOME/.claude/CLAUDE.md (appended)"
+fi
 
 echo "==> Agent integrations (status dots + session restore)"
 command -v claude   >/dev/null && herdr integration install claude   || true

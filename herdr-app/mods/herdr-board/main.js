@@ -121,7 +121,8 @@ async function watchApprovals() {
 }
 
 // what changes a card: an agent's status, title or place
-const agentSig = () => agents().map((a) => `${a.address}:${a.status}:${a.title}:${a.tab}`).sort().join(" ");
+const agentSig = () => [...agents().map((a) => `${a.address}:${a.status}:${a.title}:${a.tab}`),
+  ...terminals().filter((k) => k.parent && k.state === "live").map((k) => `${k.address}:${k.status}`)].sort().join(" ");
 const clean = (x) => (x ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 const KIND = { blocked: "needs_you", working: "in_flight", done: "ready", idle: "done" };
 
@@ -271,6 +272,21 @@ class Agents {
         pane: a.pane, harness: a.program?.key, title: tab?.named ? tab.name : title && !/^[~/]/.test(title) ? title : tab?.name ?? "" });
       bearings.push({ key: a.address, kind: waits ? "needs_you" : KIND[a.status] ?? "done", reason: waits ? "It has a plan for you: open Plan to read it." : a.status ?? "", next: "" });
     }
+    // Helpers an agent started with `hc run` have no pane, so they aren't in agents(): a card each, in the project of
+    // the listed agent they descend from. Clicking one peeks at it (goTo).
+    const byAddr = new Map(list.map((a) => [a.address, a]));
+    const all = terminals();
+    const parentOf = new Map(all.map((k) => [k.address, k.parent]));
+    for (const k of all) {
+      if (k.state !== "live" || !k.parent || !k.status || byAddr.has(k.address)) continue;
+      let p = k.parent, root = null;
+      for (let i = 0; p && !root && i < 10; i++) { root = byAddr.get(p); p = parentOf.get(p); }
+      if (!root) continue; // a helper of something not on the board
+      const st = k.status === "error" ? "blocked" : k.status; // as the agents mod shows them
+      rows.push({ key: k.address, project: root.space_name || "space", slug: k.program?.name || k.address, session: k.address, mux: "hc", agent: st, session_status: "Live", plan: null, model: null,
+        pane: null, harness: k.program?.key, title: `${k.name || k.address} · helper of ${clean(root.title) || root.address}` });
+      bearings.push({ key: k.address, kind: KIND[st] ?? "done", reason: st ?? "", next: "" });
+    }
     return { rows, bearings };
   }
   async log() { return []; }
@@ -278,6 +294,7 @@ class Agents {
   async start(key, what) {
     const a = agents().find((x) => x.address === key);
     if (what === "remove" && a) run("pane.close", { pane: a.pane });
+    else if (what === "remove") await exec("hc", ["kill", key]).catch(() => {}); // a helper: no pane to close
     return { state: "done", code: 0, output: "" };
   }
   async action() { return { state: "done", code: 0 }; }
@@ -725,9 +742,10 @@ export default class Board extends View {
   goTo(cx, t) {
     if (!t?.row.session) return;
     if (this.focus) this.setFocus(cx, false);
-    run("agent.focus", { terminal: t.row.session });
     run("layout.select", { stack: "main", child: "work" });
     setShared(VIEW, "work");
+    if (!t.row.pane) run("terminal.peek", { terminal: t.row.session }); // a helper: peek over the tab
+    else run("agent.focus", { terminal: t.row.session });
   }
 
   setFocus(cx, on, task) {

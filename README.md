@@ -17,6 +17,8 @@ The window has three parts:
 - **Running panel** (right, toggled with **▤ Running** in the top bar): lists dev servers by port, shows whether each one answers on localhost, the errors in its logs, and its CPU and memory use. Click a port to open it in the browser.
 - **Status bar:** counts of tasks, working, need you, done and idle.
 
+**Helpers:** terminals an agent starts with `hc run` get their own card, titled "<name> · helper of <agent>", in the parent's project. Click one to peek at it. Claude Code's built-in background agents run inside one process and never show up, which is why `CLAUDE-herdr.md` asks Claude to use `hc run` instead.
+
 **Cursor approvals:** Cursor has no hook for "waiting for your approval", so Herdr would keep it on *working*. The board's top bar reads the screen of every working Cursor agent every 2 seconds. When it sees "Run this command?", it marks that agent **blocked** (NEEDS YOU, plus Herdr's own dots and notifications). Once you answer, it marks it working again. This only runs while the herdsman layout is shown.
 
 Press **F** for focus mode. It fades everything except NEEDS YOU and shows the selected agent's live terminal, so you can answer it there. If a Claude Code card's agent has written a plan, the card gets a **Plan** button. It opens the plan with its todo progress.
@@ -34,6 +36,7 @@ Tested with Herdr app 0.1.16 and herdr CLI 0.9.5.
 | `herdr-app/settings.json` | `~/.config/herdr-app/` | Dark appearance, sounds on, zoom 1 |
 | `herdr/config.toml` | `~/.config/herdr/` | herdr CLI/TUI config: onboarding off, system notifications, dot status indicators |
 | `claude/hooks/herdr-board-plan.py` | `~/.claude/hooks/` | Claude Code hook that records each agent's plan file and todos for the Plan button |
+| `claude/CLAUDE-herdr.md` | appended to `~/.claude/CLAUDE.md` (once) | Tells Claude Code to start parallel helpers as Herdr terminals (`hc run`) instead of its built-in background agents, which Herdr can't see |
 | `cursor/herdr-app-status.sh` | `~/.cursor/` (plus entries in `~/.cursor/hooks.json`) | Reports Cursor as idle / working / done to Herdr. Without it, Cursor doesn't show up as an agent at all |
 | `install.sh` | – | Does all of the above |
 
