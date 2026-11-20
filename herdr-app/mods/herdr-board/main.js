@@ -98,6 +98,28 @@ async function question(address) {
   return !q ? "" : q.length > 160 ? q.slice(0, 159) + "…" : q;
 }
 
+// Cursor has no hook for "waiting for your approval", so Herdr kept it on working. Read the screens of working Cursor
+// agents and report blocked to Herdr ourselves (the OSC 7501 its status hooks send), then working once it's answered.
+// Cursor's own hooks only send idle/working/done, so a blocked Cursor agent is always one we reported.
+const APPROVAL = /Run this command\?|Approval \d+ of \d+|Skip & tell the agent/;
+async function reportStatus(address, state) {
+  const g = JSON.parse((await exec("hc", ["get", address])).stdout);
+  const tty = (await exec("ps", ["-o", "tty=", "-p", String(g.foreground?.pid ?? g.pid)])).stdout.trim();
+  if (!tty || tty.startsWith("?")) return;
+  await exec("sh", ["-c", 'printf "\\033]7501;state=%s:app=cursor\\007" "$1" > "/dev/$2"', "sh", state, tty]);
+}
+async function watchApprovals() {
+  for (const a of agents()) {
+    if (a.app !== "cursor" || a.address.includes("/")) continue; // shortcut: local terminals only, their tty is here
+    if (a.status !== "working" && a.status !== "blocked") continue;
+    try {
+      const asks = APPROVAL.test(((await exec("hc", ["read", a.address])).stdout ?? "").split("\n").slice(-25).join("\n"));
+      if (asks && a.status === "working") await reportStatus(a.address, "blocked");
+      else if (!asks && a.status === "blocked") await reportStatus(a.address, "working");
+    } catch { /* gone or no screen: next round */ }
+  }
+}
+
 // what changes a card: an agent's status, title or place
 const agentSig = () => agents().map((a) => `${a.address}:${a.status}:${a.title}:${a.tab}`).sort().join(" ");
 const clean = (x) => (x ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
@@ -272,6 +294,7 @@ export default class Board extends View {
       this.sys = shared(SYS);
       this.sample(cx);
       cx.timer.every(SAMPLE_MS, (cx) => this.sample(cx));
+      cx.timer.every(2000, () => { watchApprovals(); }); // the top bar is always shown, and only once
     }
     if (this.part !== "board") { // the bars only draw what the board shares, and the clock
       cx.timer.every(30000, (cx) => { this.now = Date.now(); cx.notify(); });

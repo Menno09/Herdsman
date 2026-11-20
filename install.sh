@@ -66,6 +66,28 @@ os.makedirs(os.path.dirname(path), exist_ok=True)
 json.dump(s, open(path, "w"), indent=2)
 PY
 
+if [ -d "$HOME/.cursor" ]; then
+  echo "==> Cursor status hooks (so Herdr shows Cursor as working / done)"
+  put "$HERE/cursor/herdr-app-status.sh" "$HOME/.cursor/herdr-app-status.sh"
+  python3 - "$HOME/.cursor/hooks.json" "$STAMP" <<'PY'
+import json, os, shutil, sys
+path, stamp = sys.argv[1], sys.argv[2]
+script = os.path.expanduser("~/.cursor/herdr-app-status.sh")
+try:
+    h = json.load(open(path))
+    shutil.copy(path, f"{path}.bak-{stamp}")
+except FileNotFoundError:
+    h = {"version": 1}
+hooks = h.setdefault("hooks", {})
+for event, state in [("sessionStart", "idle"), ("beforeSubmitPrompt", "working"), ("stop", "done")]:
+    cmd = f"sh '{script}' {state}"
+    lst = hooks.setdefault(event, [])
+    if not any(x.get("command") == cmd for x in lst):
+        lst.append({"command": cmd})
+json.dump(h, open(path, "w"), indent=2)
+PY
+fi
+
 echo "==> Checking the mods"
 herdr-app check "$APP_HOME/mods/herdr-board"
 herdr-app check "$APP_HOME/mods/spaces-tree"
