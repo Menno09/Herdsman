@@ -17,7 +17,7 @@ The window has three parts:
 - **Running panel** (right, toggled with **▤ Running** in the top bar): lists dev servers by port, shows whether each one answers on localhost, the errors in its logs, and its CPU and memory use. Click a port to open it in the browser.
 - **Status bar:** counts of tasks, working, need you, done and idle.
 
-**Helpers:** terminals an agent starts with `hc run` get their own card, titled "<name> · helper of <agent>", in the parent's project. Click one to peek at it. Claude Code's built-in background agents run inside one process and never show up, which is why `CLAUDE-herdr.md` asks Claude to use `hc run` instead.
+**Helpers:** terminals an agent starts with `hc run` get their own card on the board, titled "<name> · helper of <agent>", and a line under their parent in the sidebar (└ name, status dot, PR chip). Click either to peek at it. Claude Code's built-in background agents run inside one process and never show up, which is why `CLAUDE-herdr.md` asks Claude to use `hc run` instead.
 
 **Cursor approvals:** Cursor has no hook for "waiting for your approval", so Herdr would keep it on *working*. The board's top bar reads the screen of every working Cursor agent every 2 seconds. When it sees "Run this command?", it marks that agent **blocked** (NEEDS YOU, plus Herdr's own dots and notifications). Once you answer, it marks it working again. This only runs while the herdsman layout is shown.
 

@@ -8,7 +8,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { spaces, machines, panes, agents, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, agents, terminals, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -144,7 +144,7 @@ export default class Spaces extends View {
     cx.spawn(async (cx) => {
       try {
         const prs = {};
-        for (const a of agents()) {
+        for (const a of [...agents(), ...terminals().filter((k) => k.parent && k.state === "live")]) {
           if (a.address.includes("/")) continue; // shortcut: local chats only
           try {
             const links = ((await exec("hc", ["read", "--lines", "3000", a.address])).stdout ?? "").match(PR_RE);
@@ -192,25 +192,42 @@ export default class Spaces extends View {
       setShared("herdr-board.view", "work");
     };
     if (!ps.length) return [div().pl(44).py(3).flex_none().text_size(12).text_color(t.dim).child("Nothing running")];
-    return ps.map((p) => {
-      const pic = p.program?.icon ? (p.program.tint ? svg(p.program.icon).size(13).flex_none().text_color(t.muted) : image(p.program.icon).w(13).h(13).flex_none())
-        : div().size(13).flex_none();
-      const open = agentsHere.has(p.terminal) ? [] : ports[p.terminal] ?? [];
-      const prUrl = this.prs?.[p.terminal];
+    const icon = (prog) => prog?.icon ? (prog.tint ? svg(prog.icon).size(13).flex_none().text_color(t.muted) : image(prog.icon).w(13).h(13).flex_none())
+      : div().size(13).flex_none();
+    const prChip = (term) => {
+      const prUrl = this.prs?.[term];
       const pr = prUrl && this.prState.get(prUrl);
-      const prChip = pr?.state === "OPEN" ? [div().id(`pr-${p.pane}`).flex_none().px(4).rounded(3).border_1().border_color(t.border)
+      return pr?.state === "OPEN" ? [div().id(`pr-${term}`).flex_none().px(4).rounded(3).border_1().border_color(t.border)
         .text_size(10.5).text_color(pr.isDraft ? t.muted : t.ansi2).cursor_pointer().hover((st) => st.bg(t.raised))
         .tooltip(`${pr.isDraft ? "Draft PR" : "Open PR"} #${pr.number}: ${pr.title}`)
         .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [prUrl]).catch(() => {}); }).child(`#${pr.number}`)] : [];
-      return h_flex().id(`run-${p.pane}`).h(26).flex_none().pl(36).pr(8).gap(7).items_center().rounded(6).cursor_pointer()
+    };
+    // Helpers an agent started with `hc run` have no pane: listed under it, depth first, click to peek at one.
+    const all = terminals();
+    const inPane = new Set(panes().map((p) => p.terminal));
+    const helpers = (addr, depth) => all.filter((k) => k.parent === addr && k.state === "live" && !inPane.has(k.address)).flatMap((k) => {
+      const st = k.status === "error" ? "blocked" : k.status === "done" ? "idle" : k.status; // as the agents mod shows them
+      return [h_flex().id(`helper-${k.address}`).h(24).flex_none().pl(36 + 14 * depth).pr(8).gap(7).items_center().rounded(6).cursor_pointer()
+        .hover((s) => s.bg(t.hover)).tooltip("Helper: click to peek").on_click(() => run("terminal.peek", { terminal: k.address }))
+        .child(div().flex_none().text_size(11).text_color(t.dim).child("└"))
+        .child(icon(k.program))
+        .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.muted).child(k.name || cleanTitle(k.title) || k.program?.name || k.address))
+        .children(prChip(k.address))
+        .children(mark(st) ? [mark(st)] : []),
+      ...helpers(k.address, depth + 1)];
+    });
+    return ps.flatMap((p) => {
+      const open = agentsHere.has(p.terminal) ? [] : ports[p.terminal] ?? [];
+      return [h_flex().id(`run-${p.pane}`).h(26).flex_none().pl(36).pr(8).gap(7).items_center().rounded(6).cursor_pointer()
         .hover((st) => st.bg(t.hover)).on_click(() => go(p))
-        .child(pic)
+        .child(icon(p.program))
         .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted).child(cleanTitle(p.title) || p.program?.name || p.terminal))
         .children(open.map((port) => div().id(`port-${p.pane}-${port}`).flex_none().px(4).rounded(3).border_1().border_color(t.border)
           .text_size(10.5).text_color(t.ansi2).cursor_pointer().hover((st) => st.bg(t.raised)).tooltip(`Open http://localhost:${port}`)
           .on_click((_e, cx) => { cx.stop_propagation(); exec("open", [`http://localhost:${port}`]).catch(() => {}); }).child(`:${port}`)))
-        .children(prChip)
-        .children(mark(p.status) ? [mark(p.status)] : []);
+        .children(prChip(p.terminal))
+        .children(mark(p.status) ? [mark(p.status)] : []),
+      ...helpers(p.terminal, 1)];
     });
   }
 
